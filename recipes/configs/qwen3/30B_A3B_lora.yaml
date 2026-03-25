@@ -1,0 +1,153 @@
+# Config for distributed LoRA finetuning of Qwen3-30B-A3B (MoE)
+# using lora_finetune_distributed.py
+#
+# Architecture: 48 layers, 128 experts/layer, top-8 routing, ~3.3B active params/token
+#
+# Pre-requisite:
+#   tune download Qwen/Qwen3-30B-A3B --output-dir /tmp/Qwen3-30B-A3B
+#
+# Launch (8 GPUs):
+#   tune run --nproc_per_node 8 lora_finetune_distributed --config qwen3/30B_A3B_lora
+#
+# This config is optimized for 8xA100-80GB or 8xH100.
+
+output_dir: /tmp/torchtune/qwen3_30B_A3B/lora
+
+# ---------------------------------------------------------------------------
+# Model: LoRA on all attention projections + all 128 expert MLPs per layer
+# ---------------------------------------------------------------------------
+model:
+  _component_: torchtune.models.qwen3.lora_qwen3_30b_a3b
+  lora_attn_modules: ['q_proj', 'k_proj', 'v_proj', 'output_proj']
+  apply_lora_to_mlp: True
+  apply_lora_to_output: False
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.0
+
+# ---------------------------------------------------------------------------
+# Tokenizer
+# ---------------------------------------------------------------------------
+tokenizer:
+  _component_: torchtune.models.qwen3.qwen3_tokenizer
+  path: /tmp/Qwen3-30B-A3B/vocab.json
+  merges_file: /tmp/Qwen3-30B-A3B/merges.txt
+  max_seq_len: 4096
+
+# ---------------------------------------------------------------------------
+# Checkpointing (16 safetensor shards)
+# ---------------------------------------------------------------------------
+checkpointer:
+  _component_: torchtune.training.FullModelHFCheckpointer
+  checkpoint_dir: /tmp/Qwen3-30B-A3B
+  checkpoint_files:
+    filename_format: model-{}-of-{}.safetensors
+    max_filename: "00016"
+  recipe_checkpoint: null
+  output_dir: ${output_dir}
+  model_type: QWEN3_MOE
+save_adapter_weights_only: True
+resume_from_checkpoint: False
+
+# ---------------------------------------------------------------------------
+# Training dataset: Indic instruct (OpenAI chat format)
+# Packing enabled for ~2x throughput with Flash Attention 2
+# ---------------------------------------------------------------------------
+dataset:
+  _component_: torchtune.datasets.chat_dataset
+  source: Darkyy/indic-instruct
+  conversation_column: messages
+  conversation_style: openai
+  train_on_input: False
+  packed: True
+  split: train
+seed: 42
+shuffle: True
+
+# ---------------------------------------------------------------------------
+# Validation dataset: evaluate every N steps
+# ---------------------------------------------------------------------------
+run_val_every_n_steps: 250
+dataset_val:
+  _component_: torchtune.datasets.chat_dataset
+  source: Darkyy/indic-instruct-eval
+  conversation_column: messages
+  conversation_style: openai
+  train_on_input: False
+  packed: True
+  split: train
+batch_size_val: 2
+
+# ---------------------------------------------------------------------------
+# Optimizer: AdamW with cosine LR + 5% warmup
+# Research-backed: LR=1e-4 optimal for LoRA, cosine decay, moderate weight decay
+# ---------------------------------------------------------------------------
+batch_size: 2
+optimizer:
+  _component_: torch.optim.AdamW
+  lr: 1e-4
+  weight_decay: 0.01
+  fused: True
+lr_scheduler:
+  _component_: torchtune.training.lr_schedulers.get_cosine_schedule_with_warmup
+  num_warmup_steps: 200
+optimizer_in_bwd: False
+loss:
+  _component_: torchtune.modules.loss.LinearCrossEntropyLoss
+
+# ---------------------------------------------------------------------------
+# Training loop
+# - 3 epochs for thorough SFT on 135K samples
+# - Gradient accumulation 8 -> effective batch = 2 * 8 * 8 GPUs = 128
+# - Grad clip at 1.0: critical for MoE stability (prevents router gradient spikes)
+# ---------------------------------------------------------------------------
+epochs: 3
+max_steps_per_epoch: null
+gradient_accumulation_steps: 8
+clip_grad_norm: 1.0
+
+# ---------------------------------------------------------------------------
+# Performance: activation checkpointing + compile for speed/memory
+# - Activation checkpointing wraps each TransformerSelfAttentionLayer (incl. MoE)
+# - torch.compile fuses operations and reduces Python loop overhead in LoRA experts
+# - custom_sharded_layers: shard embeddings separately (large vocab = 151936)
+# ---------------------------------------------------------------------------
+compile: True
+enable_activation_checkpointing: True
+enable_activation_offloading: False
+custom_sharded_layers: ['tok_embeddings']
+fsdp_cpu_offload: False
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+device: cuda
+dtype: bf16
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+metric_logger:
+  _component_: torchtune.training.metric_logging.DiskLogger
+  log_dir: ${output_dir}/logs
+log_every_n_steps: 1
+log_peak_memory_stats: True
+log_level: INFO
+
+# ---------------------------------------------------------------------------
+# Profiler (disabled by default)
+# ---------------------------------------------------------------------------
+profiler:
+  _component_: torchtune.training.setup_torch_profiler
+  enabled: False
+  output_dir: ${output_dir}/profiling_outputs
+  cpu: True
+  cuda: True
+  profile_memory: False
+  with_stack: False
+  record_shapes: True
+  with_flops: False
+  wait_steps: 5
+  warmup_steps: 5
+  active_steps: 2
+  num_cycles: 1

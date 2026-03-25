@@ -20,6 +20,12 @@ from torchtune.modules import (
     TiedLinear
 )
 
+from torchtune.modules.moe import (
+    GroupedExperts,
+    LoRAGroupedExperts,
+    MoE,
+    TokenChoiceTopKRouter,
+)
 
 from torchtune.modules.peft import DoRALinear, LORA_ATTN_MODULES, LoRALinear
 
@@ -499,3 +505,372 @@ def lora_qwen3_mlp(
         down_proj=down_proj,
         up_proj=up_proj,
     )
+
+
+# ---------------------------------------------------------------------------
+# Qwen3 MoE builders
+# ---------------------------------------------------------------------------
+
+
+def qwen3_moe_block(
+    dim: int,
+    hidden_dim: int,
+    num_experts: int = 128,
+    experts_per_token: int = 8,
+    normalize_top_k: bool = True,
+) -> MoE:
+    """
+    Build the MoE layer for Qwen3 MoE models.
+
+    Args:
+        dim (int): Input dimension of experts.
+        hidden_dim (int): Hidden dimension of each expert.
+        num_experts (int): Number of experts per layer. Default: 128
+        experts_per_token (int): Active experts per token. Default: 8
+        normalize_top_k (bool): Normalize top-k routing scores to sum to 1. Default: True
+
+    Returns:
+        MoE: Instantiation of MoE layer.
+    """
+    router = TokenChoiceTopKRouter(
+        gate=nn.Linear(dim, num_experts, bias=False),
+        dim=dim,
+        num_experts=num_experts,
+        experts_per_token=experts_per_token,
+        normalize_top_k=normalize_top_k,
+    )
+    experts = GroupedExperts(dim=dim, hidden_dim=hidden_dim, num_experts=num_experts)
+    return MoE(experts=experts, router=router, shared_expert=None)
+
+
+def lora_qwen3_moe_block(
+    dim: int,
+    hidden_dim: int,
+    lora_rank: int,
+    lora_alpha: float,
+    lora_dropout: float = 0.0,
+    num_experts: int = 128,
+    experts_per_token: int = 8,
+    normalize_top_k: bool = True,
+) -> MoE:
+    """
+    Build the MoE layer with LoRA-adapted experts for Qwen3 MoE models.
+
+    Args:
+        dim (int): Input dimension of experts.
+        hidden_dim (int): Hidden dimension of each expert.
+        lora_rank (int): Rank of each low-rank approximation.
+        lora_alpha (float): Scaling factor for the low-rank approximation.
+        lora_dropout (float): LoRA dropout probability. Default: 0.0
+        num_experts (int): Number of experts per layer. Default: 128
+        experts_per_token (int): Active experts per token. Default: 8
+        normalize_top_k (bool): Normalize top-k routing scores to sum to 1. Default: True
+
+    Returns:
+        MoE: Instantiation of MoE layer with LoRA experts.
+    """
+    router = TokenChoiceTopKRouter(
+        gate=nn.Linear(dim, num_experts, bias=False),
+        dim=dim,
+        num_experts=num_experts,
+        experts_per_token=experts_per_token,
+        normalize_top_k=normalize_top_k,
+    )
+    experts = LoRAGroupedExperts(
+        dim=dim,
+        hidden_dim=hidden_dim,
+        num_experts=num_experts,
+        rank=lora_rank,
+        alpha=lora_alpha,
+        dropout=lora_dropout,
+    )
+    return MoE(experts=experts, router=router, shared_expert=None)
+
+
+def qwen3_moe(
+    vocab_size: int,
+    num_layers: int,
+    num_heads: int,
+    num_kv_heads: int,
+    embed_dim: int,
+    moe_hidden_dim: int,
+    num_experts: int,
+    experts_per_token: int,
+    max_seq_len: int,
+    head_dim: Optional[int] = None,
+    attn_dropout: float = 0.0,
+    norm_eps: float = 1e-6,
+    rope_base: float = 1_000_000.0,
+    tie_word_embeddings: bool = False,
+    q_proj_bias: bool = False,
+    k_proj_bias: bool = False,
+    v_proj_bias: bool = False,
+    q_norm: bool = True,
+    k_norm: bool = True,
+    normalize_top_k: bool = True,
+) -> TransformerDecoder:
+    """
+    Build the decoder for Qwen3 MoE models (e.g., Qwen3-30B-A3B). This includes:
+    - Token embeddings
+    - num_layers TransformerSelfAttentionLayer blocks with MoE FFN
+    - RMS Norm layer applied to the output of the transformer
+    - Final projection into token space
+
+    Args:
+        vocab_size (int): Number of tokens in vocabulary.
+        num_layers (int): Number of transformer layers.
+        num_heads (int): Number of query heads.
+        num_kv_heads (int): Number of key/value heads for GQA.
+        embed_dim (int): Embedding dimension for self-attention.
+        moe_hidden_dim (int): Hidden dimension for each expert MLP.
+        num_experts (int): Number of experts per MoE layer.
+        experts_per_token (int): Number of active experts per token.
+        max_seq_len (int): Maximum sequence length.
+        head_dim (Optional[int]): Dimension of each attention head.
+        attn_dropout (float): Attention dropout. Default: 0.0
+        norm_eps (float): RMSNorm epsilon. Default: 1e-6
+        rope_base (float): RoPE base frequency. Default: 1_000_000.0
+        tie_word_embeddings (bool): Tie input/output embeddings. Default: False
+        q_proj_bias (bool): Use bias in Q projection. Default: False
+        k_proj_bias (bool): Use bias in K projection. Default: False
+        v_proj_bias (bool): Use bias in V projection. Default: False
+        q_norm (bool): Apply RMSNorm to Q. Default: True
+        k_norm (bool): Apply RMSNorm to K. Default: True
+        normalize_top_k (bool): Normalize top-k routing scores. Default: True
+
+    Returns:
+        TransformerDecoder: Instantiation of Qwen3 MoE model.
+    """
+    head_dim = head_dim or embed_dim // num_heads
+    num_kv_heads = num_kv_heads if num_kv_heads else num_heads
+
+    rope = Qwen2RotaryPositionalEmbeddings(
+        dim=head_dim, max_seq_len=max_seq_len, base=rope_base
+    )
+
+    layers = nn.ModuleList()
+    for _ in range(num_layers):
+        self_attn = Qwen3Attention(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            head_dim=head_dim,
+            q_proj=nn.Linear(embed_dim, num_heads * head_dim, bias=q_proj_bias),
+            k_proj=nn.Linear(embed_dim, num_kv_heads * head_dim, bias=k_proj_bias),
+            v_proj=nn.Linear(embed_dim, num_kv_heads * head_dim, bias=v_proj_bias),
+            output_proj=nn.Linear(num_heads * head_dim, embed_dim, bias=False),
+            pos_embeddings=rope,
+            q_norm=RMSNorm(dim=head_dim, eps=norm_eps) if q_norm else None,
+            k_norm=RMSNorm(dim=head_dim, eps=norm_eps) if k_norm else None,
+            kv_cache=None,
+            max_seq_len=max_seq_len,
+            attn_dropout=attn_dropout,
+        )
+
+        moe_layer = qwen3_moe_block(
+            dim=embed_dim,
+            hidden_dim=moe_hidden_dim,
+            num_experts=num_experts,
+            experts_per_token=experts_per_token,
+            normalize_top_k=normalize_top_k,
+        )
+
+        layer = TransformerSelfAttentionLayer(
+            attn=self_attn,
+            mlp=moe_layer,
+            sa_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
+            mlp_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
+        )
+        layers.append(layer)
+
+    tok_embeddings = nn.Embedding(vocab_size, embed_dim)
+    if tie_word_embeddings:
+        output_proj = TiedLinear(tok_embeddings)
+    else:
+        output_proj = nn.Linear(embed_dim, vocab_size, bias=False)
+
+    return TransformerDecoder(
+        tok_embeddings=tok_embeddings,
+        layers=layers,
+        max_seq_len=max_seq_len,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        norm=RMSNorm(embed_dim, eps=norm_eps),
+        output=output_proj,
+    )
+
+
+def lora_qwen3_moe(
+    lora_attn_modules: list[LORA_ATTN_MODULES],
+    apply_lora_to_mlp: bool = False,
+    apply_lora_to_output: bool = False,
+    *,
+    # model args
+    vocab_size: int,
+    num_layers: int,
+    num_heads: int,
+    num_kv_heads: int,
+    embed_dim: int,
+    moe_hidden_dim: int,
+    num_experts: int,
+    experts_per_token: int,
+    max_seq_len: int,
+    head_dim: Optional[int] = None,
+    attn_dropout: float = 0.0,
+    norm_eps: float = 1e-6,
+    rope_base: float = 1_000_000.0,
+    tie_word_embeddings: bool = False,
+    q_proj_bias: bool = False,
+    k_proj_bias: bool = False,
+    v_proj_bias: bool = False,
+    q_norm: bool = True,
+    k_norm: bool = True,
+    normalize_top_k: bool = True,
+    # LoRA args
+    lora_rank: int,
+    lora_alpha: float,
+    lora_dropout: float = 0.0,
+    use_dora: bool = False,
+    quantize_base: bool = False,
+) -> TransformerDecoder:
+    """
+    Build a LoRA-adapted Qwen3 MoE decoder.
+
+    LoRA is applied to attention projections (as specified by ``lora_attn_modules``)
+    and optionally to MoE expert layers (when ``apply_lora_to_mlp=True``).
+
+    Args:
+        lora_attn_modules (list[LORA_ATTN_MODULES]): Which attention projections
+            get LoRA. Options: ``{"q_proj", "k_proj", "v_proj", "output_proj"}``.
+        apply_lora_to_mlp (bool): Apply LoRA to MoE expert layers. Default: False
+        apply_lora_to_output (bool): Apply LoRA to output projection. Default: False
+        vocab_size (int): Vocabulary size.
+        num_layers (int): Number of transformer layers.
+        num_heads (int): Number of query heads.
+        num_kv_heads (int): Number of key/value heads.
+        embed_dim (int): Embedding dimension.
+        moe_hidden_dim (int): Hidden dimension for each expert.
+        num_experts (int): Number of experts per layer.
+        experts_per_token (int): Active experts per token.
+        max_seq_len (int): Maximum sequence length.
+        head_dim (Optional[int]): Head dimension.
+        attn_dropout (float): Attention dropout. Default: 0.0
+        norm_eps (float): RMSNorm epsilon. Default: 1e-6
+        rope_base (float): RoPE base. Default: 1_000_000.0
+        tie_word_embeddings (bool): Tie embeddings. Default: False
+        q_proj_bias (bool): Q projection bias. Default: False
+        k_proj_bias (bool): K projection bias. Default: False
+        v_proj_bias (bool): V projection bias. Default: False
+        q_norm (bool): Apply RMSNorm to Q. Default: True
+        k_norm (bool): Apply RMSNorm to K. Default: True
+        normalize_top_k (bool): Normalize routing scores. Default: True
+        lora_rank (int): LoRA rank.
+        lora_alpha (float): LoRA scaling factor.
+        lora_dropout (float): LoRA dropout. Default: 0.0
+        use_dora (bool): Use DoRA instead of LoRA. Default: False
+        quantize_base (bool): Quantize base weights. Default: False
+
+    Returns:
+        TransformerDecoder: Qwen3 MoE model with LoRA applied.
+    """
+    head_dim = head_dim or embed_dim // num_heads
+    num_kv_heads = num_kv_heads if num_kv_heads else num_heads
+
+    rope = Qwen2RotaryPositionalEmbeddings(
+        dim=head_dim, max_seq_len=max_seq_len, base=rope_base
+    )
+
+    layers = nn.ModuleList()
+    for _ in range(num_layers):
+        self_attn = lora_qwen3_self_attention(
+            lora_modules=lora_attn_modules,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            max_seq_len=max_seq_len,
+            head_dim=head_dim,
+            attn_dropout=attn_dropout,
+            norm_eps=norm_eps,
+            q_proj_bias=q_proj_bias,
+            k_proj_bias=k_proj_bias,
+            v_proj_bias=v_proj_bias,
+            q_norm=q_norm,
+            k_norm=k_norm,
+            rope_base=rope_base,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            use_dora=use_dora,
+            quantize_base=quantize_base,
+        )
+
+        if apply_lora_to_mlp:
+            moe_layer = lora_qwen3_moe_block(
+                dim=embed_dim,
+                hidden_dim=moe_hidden_dim,
+                lora_rank=lora_rank,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                num_experts=num_experts,
+                experts_per_token=experts_per_token,
+                normalize_top_k=normalize_top_k,
+            )
+        else:
+            moe_layer = qwen3_moe_block(
+                dim=embed_dim,
+                hidden_dim=moe_hidden_dim,
+                num_experts=num_experts,
+                experts_per_token=experts_per_token,
+                normalize_top_k=normalize_top_k,
+            )
+
+        layer = TransformerSelfAttentionLayer(
+            attn=self_attn,
+            mlp=moe_layer,
+            sa_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
+            mlp_norm=RMSNorm(dim=embed_dim, eps=norm_eps),
+        )
+        layers.append(layer)
+
+    tok_embeddings = nn.Embedding(vocab_size, embed_dim)
+
+    if tie_word_embeddings:
+        if apply_lora_to_output:
+            raise ValueError(
+                "apply_lora_to_output is incompatible with tie_word_embeddings"
+            )
+        output_proj = TiedLinear(tok_embeddings)
+    else:
+        adapter_cls = DoRALinear if use_dora else LoRALinear
+        output_proj = (
+            adapter_cls(
+                embed_dim,
+                vocab_size,
+                rank=lora_rank,
+                alpha=lora_alpha,
+                dropout=lora_dropout,
+            )
+            if apply_lora_to_output
+            else nn.Linear(embed_dim, vocab_size, bias=False)
+        )
+
+    model = TransformerDecoder(
+        tok_embeddings=tok_embeddings,
+        layers=layers,
+        max_seq_len=max_seq_len,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        norm=RMSNorm(embed_dim, eps=norm_eps),
+        output=output_proj,
+    )
+
+    if quantize_base:
+        model._register_state_dict_hook(
+            partial(
+                reparametrize_as_dtype_state_dict_post_hook,
+                dtype=tok_embeddings.weight.dtype,
+                offload_to_cpu=True,
+            )
+        )
+
+    return model

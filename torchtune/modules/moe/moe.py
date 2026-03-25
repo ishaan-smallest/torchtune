@@ -30,12 +30,14 @@ class TokenChoiceTopKRouter(nn.Module):
         dim: int,
         num_experts: int,
         experts_per_token: int,
+        normalize_top_k: bool = False,
     ):
         super().__init__()
         self.gate = gate
         self.dim = dim
         self.num_experts = num_experts
         self.experts_per_token = experts_per_token
+        self.normalize_top_k = normalize_top_k
 
     def forward(
         self, x: torch.Tensor
@@ -63,7 +65,8 @@ class TokenChoiceTopKRouter(nn.Module):
             scores, k=self.experts_per_token, dim=1
         )
         self.selected_experts_indices = selected_experts_indices
-        # top_scores /= top_scores.sum(dim=-1, keep_dim=True).to(x.dtype)
+        if self.normalize_top_k:
+            top_scores = top_scores / top_scores.sum(dim=-1, keepdim=True)
 
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
         num_tokens_per_expert = torch.histc(

@@ -7,7 +7,12 @@ from typing import List, Optional
 
 from torchtune.data._prompt_templates import _get_prompt_template, _TemplateType
 
-from torchtune.models.qwen3._component_builders import lora_qwen3, qwen3
+from torchtune.models.qwen3._component_builders import (
+    lora_qwen3,
+    lora_qwen3_moe,
+    qwen3,
+    qwen3_moe,
+)
 from torchtune.models.qwen3._tokenizer import QWEN3_SPECIAL_TOKENS, Qwen3Tokenizer
 from torchtune.modules import TransformerDecoder
 from torchtune.modules.peft import LORA_ATTN_MODULES
@@ -1097,6 +1102,110 @@ def lora_qwen3_32b(
         v_proj_bias=False,
         q_norm=True,
         k_norm=True,
+        lora_rank=lora_rank,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        use_dora=use_dora,
+        quantize_base=quantize_base,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Qwen3 MoE model builders
+# ---------------------------------------------------------------------------
+
+
+def qwen3_30b_a3b() -> TransformerDecoder:
+    """
+    Builder for creating the Qwen3-30B-A3B MoE model.
+
+    Architecture: 48 layers, all MoE with 128 experts per layer, top-8 routing,
+    hidden_size=2048, expert_hidden_dim=768, GQA with 32 Q-heads / 4 KV-heads,
+    QK-norm enabled, sigmoid routing with normalized top-k probabilities.
+
+    See https://huggingface.co/Qwen/Qwen3-30B-A3B
+
+    Returns:
+        TransformerDecoder: Instantiation of Qwen3-30B-A3B model.
+    """
+    return qwen3_moe(
+        vocab_size=151936,
+        num_layers=48,
+        num_heads=32,
+        num_kv_heads=4,
+        embed_dim=2048,
+        moe_hidden_dim=768,
+        num_experts=128,
+        experts_per_token=8,
+        max_seq_len=40960,
+        head_dim=128,
+        attn_dropout=0.0,
+        norm_eps=1e-6,
+        rope_base=1000000.0,
+        tie_word_embeddings=False,
+        q_proj_bias=False,
+        k_proj_bias=False,
+        v_proj_bias=False,
+        q_norm=True,
+        k_norm=True,
+        normalize_top_k=True,
+    )
+
+
+def lora_qwen3_30b_a3b(
+    lora_attn_modules: List[LORA_ATTN_MODULES],
+    apply_lora_to_mlp: bool = False,
+    apply_lora_to_output: bool = False,
+    lora_rank: int = 16,
+    lora_alpha: float = 32,
+    lora_dropout: float = 0.0,
+    use_dora: bool = False,
+    quantize_base: bool = False,
+) -> TransformerDecoder:
+    """
+    Builder for creating the Qwen3-30B-A3B MoE model with LoRA enabled.
+
+    When ``apply_lora_to_mlp=True``, LoRA adapters are applied to all 128 expert
+    MLPs in every layer via ``LoRAGroupedExperts``.
+
+    Args:
+        lora_attn_modules (List[LORA_ATTN_MODULES]): Which attention projections
+            get LoRA. Options: ``{"q_proj", "k_proj", "v_proj", "output_proj"}``.
+        apply_lora_to_mlp (bool): Apply LoRA to MoE expert layers. Default: False
+        apply_lora_to_output (bool): Apply LoRA to output projection. Default: False
+        lora_rank (int): LoRA rank. Default: 16
+        lora_alpha (float): LoRA alpha. Default: 32
+        lora_dropout (float): LoRA dropout. Default: 0.0
+        use_dora (bool): Use DoRA. Default: False
+        quantize_base (bool): Quantize base weights. Default: False
+
+    Returns:
+        TransformerDecoder: Qwen3-30B-A3B with LoRA applied.
+    """
+    return lora_qwen3_moe(
+        lora_attn_modules=lora_attn_modules,
+        apply_lora_to_mlp=apply_lora_to_mlp,
+        apply_lora_to_output=apply_lora_to_output,
+        vocab_size=151936,
+        num_layers=48,
+        num_heads=32,
+        num_kv_heads=4,
+        embed_dim=2048,
+        moe_hidden_dim=768,
+        num_experts=128,
+        experts_per_token=8,
+        max_seq_len=40960,
+        head_dim=128,
+        attn_dropout=0.0,
+        norm_eps=1e-6,
+        rope_base=1000000.0,
+        tie_word_embeddings=False,
+        q_proj_bias=False,
+        k_proj_bias=False,
+        v_proj_bias=False,
+        q_norm=True,
+        k_norm=True,
+        normalize_top_k=True,
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
