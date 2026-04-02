@@ -1,9 +1,9 @@
 # Qwen3-30B-A3B-Instruct-2507 LoRA SFT on Darkyy/indic-instruct-v1
 #
-# export HF_TOKEN="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"
-# CPATH="/home/ishaan/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/include/python3.12" \
-# WANDB_API_KEY="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" \
-# CUDA_VISIBLE_DEVICES=4,5,6,7 \
+# export your token of hf
+# CPATH=".local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/include/python3.12" \
+# export your wandb token
+# CUDA_VISIBLE_DEVICES=0,1,2,3 \
 # uv run tune run --nproc_per_node 4 lora_finetune_distributed \
 #   --config /home/ishaan/torchtune/recipes/configs/qwen3/30B_A3B_lora.yaml
 
@@ -49,7 +49,7 @@ dataset:
 seed: 42
 shuffle: True
 
-run_val_every_n_steps: 500
+run_val_every_n_steps: 100
 dataset_val:
   _component_: torchtune.datasets.chat_dataset
   source: Darkyy/indic-instruct-v1
@@ -74,7 +74,7 @@ optimizer_in_bwd: False
 loss:
   _component_: torchtune.modules.loss.LinearCrossEntropyLoss
 
-epochs: 3
+epochs: 2
 max_steps_per_epoch: null
 gradient_accumulation_steps: 1
 clip_grad_norm: 1.0
@@ -95,7 +95,7 @@ metric_logger:
   _component_: torchtune.training.metric_logging.WandBLogger
   project: electron-v2
   entity: smallest-ai
-  name: indic-instruct-v1-sft-run-1
+  name: indic-instruct-v1-sft-run-2
   log_dir: ${output_dir}/logs
 log_every_n_steps: 1
 log_peak_memory_stats: True
