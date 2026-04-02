@@ -170,6 +170,12 @@ def chat_dataset(
     else:
         raise ValueError(f"Unsupported conversation style: {conversation_style}")
 
+    # Resolve filter_fn from dotted path string if needed (for YAML config compat)
+    if isinstance(filter_fn, str):
+        from torchtune.config._utils import _get_component_from_path
+
+        filter_fn = _get_component_from_path(filter_fn)
+
     ds = SFTDataset(
         source=source,
         message_transform=message_transform,

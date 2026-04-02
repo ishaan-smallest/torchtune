@@ -5,12 +5,16 @@
 # LICENSE file in the root directory of this source tree.
 
 import importlib
+import os
 
 import torch
 
 # We can only use flex attention / BlockMask if torch version >= 2.5.0 and GPU is Turing / SM75 and above
+# Set TORCHTUNE_USE_FLEX_ATTENTION=0 to force SDPA (useful when triton/compile has issues)
 _SUPPORTS_FLEX_ATTENTION = (
-    torch.cuda.is_available() and torch.cuda.get_device_capability() >= (7, 5)
+    torch.cuda.is_available()
+    and torch.cuda.get_device_capability() >= (7, 5)
+    and os.environ.get("TORCHTUNE_USE_FLEX_ATTENTION", "1") != "0"
 )
 
 _TORCHDATA_MIN_VERSION = "0.10.0"

@@ -6,6 +6,7 @@
 
 import re
 from collections import defaultdict
+from torch._tensor import Tensor
 
 import torch
 
@@ -204,7 +205,7 @@ def qwen3_moe_hf_to_tune(
         head_dim = dim // num_heads
 
     # Accumulate per-expert weights: (layer_idx, proj_name) -> {expert_idx: tensor}
-    expert_weights: dict[tuple[int, str], dict[int, torch.Tensor]] = defaultdict(dict)
+    expert_weights: dict[tuple[int, str], dict[int, torch.Tensor]] = defaultdict[tuple[int, str], dict[int, Tensor]](dict)
 
     for key, value in state_dict.items():
         if "rotary_emb.inv_freq" in key:

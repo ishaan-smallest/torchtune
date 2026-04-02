@@ -46,6 +46,55 @@ from torchtune.training.checkpointing._checkpoint_client import (
 from tqdm import tqdm
 
 
+class ExpertUtilizationTracker:
+    """Lightweight tracker for MoE expert utilization. Hooks into router forward
+    to capture num_tokens_per_expert (already computed, zero overhead).
+    Accumulates across layers/steps and returns summary stats for logging."""
+
+    def __init__(self):
+        self._counts = []  # list of [num_experts] tensors per forward
+        self._hooks = []
+
+    def attach(self, model: nn.Module):
+        from torchtune.modules.moe.moe import TokenChoiceTopKRouter
+
+        for module in model.modules():
+            if isinstance(module, TokenChoiceTopKRouter):
+                h = module.register_forward_hook(self._hook_fn)
+                self._hooks.append(h)
+
+    def _hook_fn(self, module, input, output):
+        # output = (top_scores, token_indices, num_tokens_per_expert)
+        self._counts.append(output[2].detach().float())
+
+    def get_metrics_and_reset(self) -> dict:
+        if not self._counts:
+            return {}
+        # Stack all layer counts: shape [num_layers_seen, num_experts]
+        stacked = torch.stack(self._counts)
+        # Mean across layers → per-expert average load
+        mean_load = stacked.mean(dim=0)
+        total = mean_load.sum()
+        if total > 0:
+            normalized = mean_load / total
+            metrics = {
+                "expert_utilization_std": normalized.std().item(),
+                "expert_utilization_max": normalized.max().item(),
+                "expert_utilization_min": normalized.min().item(),
+                # Coefficient of variation: lower = more balanced
+                "expert_load_balance_cv": (mean_load.std() / mean_load.mean()).item(),
+            }
+        else:
+            metrics = {}
+        self._counts.clear()
+        return metrics
+
+    def remove_hooks(self):
+        for h in self._hooks:
+            h.remove()
+        self._hooks.clear()
+
+
 class LoRAFinetuneRecipeDistributed(FTRecipeInterface):
     """
     Distributed LoRA finetuning recipe for dense transformer-based LLMs such as Llama2. This recipe supports
@@ -332,6 +381,11 @@ class LoRAFinetuneRecipeDistributed(FTRecipeInterface):
             ),
         )
         self._tokenizer = config.instantiate(cfg.tokenizer)
+
+        # Expert utilization tracking (zero overhead — hooks into already-computed router output)
+        self._expert_tracker = ExpertUtilizationTracker()
+        self._expert_tracker.attach(self._model)
+        self._log_expert_metrics = cfg.get("log_expert_metrics", True)
 
         self._optimizer = self._setup_optimizer(
             cfg_optimizer=cfg.optimizer,
@@ -826,6 +880,10 @@ class LoRAFinetuneRecipeDistributed(FTRecipeInterface):
 
                         if self._clip_grad_norm is not None:
                             log_dict.update({"grad_norm": grad_norm})
+                        if self._log_expert_metrics:
+                            log_dict.update(
+                                self._expert_tracker.get_metrics_and_reset()
+                            )
                         self._metric_logger.log_dict(
                             log_dict,
                             step=self.global_step,

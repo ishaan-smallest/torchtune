@@ -1,21 +1,14 @@
-# Config for distributed LoRA finetuning of Qwen3-30B-A3B (MoE)
-# using lora_finetune_distributed.py
+# Qwen3-30B-A3B-Instruct-2507 LoRA SFT on Darkyy/indic-instruct-v1
 #
-# Architecture: 48 layers, 128 experts/layer, top-8 routing, ~3.3B active params/token
-#
-# Pre-requisite:
-#   tune download Qwen/Qwen3-30B-A3B --output-dir /tmp/Qwen3-30B-A3B
-#
-# Launch (8 GPUs):
-#   tune run --nproc_per_node 8 lora_finetune_distributed --config qwen3/30B_A3B_lora
-#
-# This config is optimized for 8xA100-80GB or 8xH100.
+# export HF_TOKEN="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"
+# CPATH="/home/ishaan/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/include/python3.12" \
+# WANDB_API_KEY="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" \
+# CUDA_VISIBLE_DEVICES=4,5,6,7 \
+# uv run tune run --nproc_per_node 4 lora_finetune_distributed \
+#   --config /home/ishaan/torchtune/recipes/configs/qwen3/30B_A3B_lora.yaml
 
-output_dir: /tmp/torchtune/qwen3_30B_A3B/lora
+output_dir: /home/ishaan/torchtune/checkpoints/qwen3_30B_A3B/lora
 
-# ---------------------------------------------------------------------------
-# Model: LoRA on all attention projections + all 128 expert MLPs per layer
-# ---------------------------------------------------------------------------
 model:
   _component_: torchtune.models.qwen3.lora_qwen3_30b_a3b
   lora_attn_modules: ['q_proj', 'k_proj', 'v_proj', 'output_proj']
@@ -25,21 +18,15 @@ model:
   lora_alpha: 32
   lora_dropout: 0.0
 
-# ---------------------------------------------------------------------------
-# Tokenizer
-# ---------------------------------------------------------------------------
 tokenizer:
   _component_: torchtune.models.qwen3.qwen3_tokenizer
-  path: /tmp/Qwen3-30B-A3B/vocab.json
-  merges_file: /tmp/Qwen3-30B-A3B/merges.txt
+  path: /tmp/Qwen3-30B-A3B-Instruct-2507/vocab.json
+  merges_file: /tmp/Qwen3-30B-A3B-Instruct-2507/merges.txt
   max_seq_len: 4096
 
-# ---------------------------------------------------------------------------
-# Checkpointing (16 safetensor shards)
-# ---------------------------------------------------------------------------
 checkpointer:
   _component_: torchtune.training.FullModelHFCheckpointer
-  checkpoint_dir: /tmp/Qwen3-30B-A3B
+  checkpoint_dir: /tmp/Qwen3-30B-A3B-Instruct-2507
   checkpoint_files:
     filename_format: model-{}-of-{}.safetensors
     max_filename: "00016"
@@ -49,40 +36,32 @@ checkpointer:
 save_adapter_weights_only: True
 resume_from_checkpoint: False
 
-# ---------------------------------------------------------------------------
-# Training dataset: Indic instruct (OpenAI chat format)
-# Packing enabled for ~2x throughput with Flash Attention 2
-# ---------------------------------------------------------------------------
 dataset:
   _component_: torchtune.datasets.chat_dataset
-  source: Darkyy/indic-instruct
+  source: Darkyy/indic-instruct-v1
   conversation_column: messages
   conversation_style: openai
   train_on_input: False
+  new_system_prompt: "You are a helpful AI assistant fluent in Hindi (हिन्दी), Gujarati (ગુજરાતી), Tamil (தமிழ்), and Marathi (मराठी), as well as English. You always respond in the native script of the language being spoken.\n\nCore principles:\n- Always reply in the native script of the language. Hindi and Marathi in Devanagari, Gujarati in Gujarati script, Tamil in Tamil script, English in Latin script. Never use romanized or transliterated forms.\n- Even if the user writes in romanized form, always respond in the proper native script.\n- Use grammatically correct, natural-sounding language. Prioritize proper grammar, appropriate vocabulary, and fluent sentence structure over literal translation from English.\n- Respect the conventions and idioms of each language. Write the way a native speaker would — not translated English.\n- Follow the user's instructions precisely and provide clear, well-organized, and complete responses.\n- Be direct and helpful. Avoid unnecessary filler, preamble, or apologies."
   packed: True
+  filter_fn: torchtune.datasets._filters.valid_chat_messages
   split: train
 seed: 42
 shuffle: True
 
-# ---------------------------------------------------------------------------
-# Validation dataset: evaluate every N steps
-# ---------------------------------------------------------------------------
-run_val_every_n_steps: 250
+run_val_every_n_steps: 500
 dataset_val:
   _component_: torchtune.datasets.chat_dataset
-  source: Darkyy/indic-instruct-eval
+  source: Darkyy/indic-instruct-v1
   conversation_column: messages
   conversation_style: openai
   train_on_input: False
+  new_system_prompt: "You are a helpful, knowledgeable, and precise AI assistant. You are fluent in English, Hindi, Marathi, Gujarati, and Tamil — in both their native scripts and romanized (transliterated) forms.\n\nCore principles:\n- Respond in the same language and script the user writes in. If they write in romanized Hindi, reply in romanized Hindi. If they write in Tamil script, reply in Tamil script. If they write in English, reply in English.\n- Provide thorough, well-structured, and accurate responses. Prioritize correctness and clarity.\n- You excel at mathematics, science, coding, logical reasoning, and analytical tasks regardless of the language used.\n- You can use tools and call functions when provided. Follow tool schemas precisely and return well-formed tool calls.\n- Be direct. Avoid unnecessary preamble, filler, or apologies. Get to the substance of the answer."
   packed: True
-  split: train
-batch_size_val: 2
+  split: "train[-500:]"
+batch_size_val: 4
 
-# ---------------------------------------------------------------------------
-# Optimizer: AdamW with cosine LR + 5% warmup
-# Research-backed: LR=1e-4 optimal for LoRA, cosine decay, moderate weight decay
-# ---------------------------------------------------------------------------
-batch_size: 2
+batch_size: 12
 optimizer:
   _component_: torch.optim.AdamW
   lr: 1e-4
@@ -90,53 +69,38 @@ optimizer:
   fused: True
 lr_scheduler:
   _component_: torchtune.training.lr_schedulers.get_cosine_schedule_with_warmup
-  num_warmup_steps: 200
+  num_warmup_steps: 60
 optimizer_in_bwd: False
 loss:
   _component_: torchtune.modules.loss.LinearCrossEntropyLoss
 
-# ---------------------------------------------------------------------------
-# Training loop
-# - 3 epochs for thorough SFT on 135K samples
-# - Gradient accumulation 8 -> effective batch = 2 * 8 * 8 GPUs = 128
-# - Grad clip at 1.0: critical for MoE stability (prevents router gradient spikes)
-# ---------------------------------------------------------------------------
 epochs: 3
 max_steps_per_epoch: null
-gradient_accumulation_steps: 8
+gradient_accumulation_steps: 1
 clip_grad_norm: 1.0
 
-# ---------------------------------------------------------------------------
-# Performance: activation checkpointing + compile for speed/memory
-# - Activation checkpointing wraps each TransformerSelfAttentionLayer (incl. MoE)
-# - torch.compile fuses operations and reduces Python loop overhead in LoRA experts
-# - custom_sharded_layers: shard embeddings separately (large vocab = 151936)
-# ---------------------------------------------------------------------------
-compile: True
+compile: False
 enable_activation_checkpointing: True
 enable_activation_offloading: False
 custom_sharded_layers: ['tok_embeddings']
 fsdp_cpu_offload: False
+fsdp_reshard_after_forward: False
 
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
+log_expert_metrics: True
+
 device: cuda
 dtype: bf16
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 metric_logger:
-  _component_: torchtune.training.metric_logging.DiskLogger
+  _component_: torchtune.training.metric_logging.WandBLogger
+  project: electron-v2
+  entity: smallest-ai
+  name: indic-instruct-v1-sft-run-1
   log_dir: ${output_dir}/logs
 log_every_n_steps: 1
 log_peak_memory_stats: True
 log_level: INFO
 
-# ---------------------------------------------------------------------------
-# Profiler (disabled by default)
-# ---------------------------------------------------------------------------
 profiler:
   _component_: torchtune.training.setup_torch_profiler
   enabled: False
